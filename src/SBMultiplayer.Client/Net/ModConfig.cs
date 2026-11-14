@@ -9,17 +9,11 @@ namespace SBMultiplayer.Client.Net;
 /// </summary>
 internal sealed class ModConfig
 {
-    /// <summary>Adresse du serveur, "hôte:port" ou "hôte".</summary>
-    public string Server { get; set; } = $"127.0.0.1:{ProtocolInfo.DefaultPort}";
+    /// <summary>Adresse du site qui crée et relaie les parties, par exemple "https://play.example.com".</summary>
+    public string Server { get; set; } = "https://play.sblb.thefanclub.cc";
 
     /// <summary>Pseudo affiché. Vide = pseudo Steam.</summary>
     public string PlayerName { get; set; } = "";
-
-    /// <summary>When hosting, let Steam friends join through Steam P2P (no port to open).</summary>
-    public bool SteamP2PHost { get; set; } = true;
-
-    /// <summary>UDP port used when hosting a game from the F8 menu.</summary>
-    public int HostPort { get; set; } = ProtocolInfo.DefaultPort;
 
     /// <summary>Mot de passe du serveur (vide si le serveur est ouvert).</summary>
     public string ServerPassword { get; set; } = "";
@@ -155,14 +149,12 @@ internal sealed class ModConfig
         }
     }
 
-    public (string Host, int Port) ParseServer()
+    /// <summary>WebSocket address of a room on the site: the same address as <see cref="Server"/>, https becomes wss.</summary>
+    public Uri RoomSocketUri(string code)
     {
-        string s = Server.Trim();
-        int colon = s.LastIndexOf(':');
-        if (colon > 0 && int.TryParse(s[(colon + 1)..], out int port))
-        {
-            return (s[..colon], port);
-        }
-        return (s, ProtocolInfo.DefaultPort);
+        string site = Server.Trim().TrimEnd('/');
+        if (site.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) site = "wss://" + site[8..];
+        else if (site.StartsWith("http://", StringComparison.OrdinalIgnoreCase)) site = "ws://" + site[7..];
+        return new Uri($"{site}/multiplayer/ws/{Uri.EscapeDataString(code)}");
     }
 }

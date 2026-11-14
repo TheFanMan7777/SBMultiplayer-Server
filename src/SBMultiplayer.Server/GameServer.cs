@@ -13,7 +13,7 @@ namespace SBMultiplayer.Server;
 /// board states, and runs the rounds (imposed map, timer, leaderboard, match points, admin commands).
 /// Everything runs on a single thread (<see cref="Poll"/>).
 /// </summary>
-public sealed class GameServer : INetEventListener
+public sealed class GameServer
 {
     private const int EchoIdOffset = 1_000_000;
 
@@ -22,7 +22,7 @@ public sealed class GameServer : INetEventListener
 
     private sealed class Player
     {
-        public required NetPeer Peer { get; init; }
+        public required GamePeer Peer { get; init; }
         public int Id => Peer.Id;
         public string Name { get; set; } = "";
         public string MapKey { get; set; } = "";
@@ -38,7 +38,6 @@ public sealed class GameServer : INetEventListener
     }
 
     private readonly ServerOptions options;
-    private readonly NetManager net;
     private readonly NetDataWriter writer = new();
     private readonly Dictionary<int, Player> players = new();
     private readonly Queue<(double Due, int PeerId, PlayerState State)> echoQueue = new();
@@ -81,12 +80,6 @@ public sealed class GameServer : INetEventListener
     {
         this.options = options;
         this.configPath = configPath;
-        net = new NetManager(this)
-        {
-            AutoRecycle = true,
-            UpdateTime = 5,
-            DisconnectTimeout = 10_000,
-        };
     }
 
     public int PlayerCount => players.Count;
@@ -97,13 +90,10 @@ public sealed class GameServer : INetEventListener
 
     private double Now => clock.Elapsed.TotalSeconds;
 
+    /// <summary>Logs the room's settings. The room's players connect through <see cref="RoomHost"/>.</summary>
     public void Start()
     {
-        if (!net.Start(options.Port))
-        {
-            throw new InvalidOperationException($"Cannot listen on UDP port {options.Port}");
-        }
-        Log($"\"{options.ServerName}\" started on UDP port {options.Port} (protocol v{ProtocolInfo.Version}, {options.MaxPlayers} players max"
+        Log($"\"{options.ServerName}\" room started (protocol v{ProtocolInfo.Version}, {options.MaxPlayers} players max"
             + (options.Password != "" ? ", password protected" : "")
             + (options.AdminPassword != "" ? ", in-game admin enabled" : "")
             + (options.Echo ? ", echo mode" : "") + ")");
@@ -123,7 +113,6 @@ public sealed class GameServer : INetEventListener
 
     public void Poll()
     {
-        net.PollEvents();
         if (options.Echo)
         {
             FlushEcho();
@@ -131,7 +120,15 @@ public sealed class GameServer : INetEventListener
         UpdateRound();
     }
 
-    public void Stop() => net.Stop(sendDisconnectMessages: true);
+    /// <summary>Disconnects everyone in the room.</summary>
+    public void Stop()
+    {
+        foreach (Player p in players.Values.ToList())
+        {
+            p.Peer.Disconnect("server stopped");
+        }
+        players.Clear();
+    }
 
     // ---------- Console ----------
 
@@ -819,7 +816,7 @@ public sealed class GameServer : INetEventListener
                 }
                 Log($"{target.Name} (#{target.Id}) kicked by {by}");
                 BroadcastEvent(ServerEvents.PlayerKicked, target.Name);
-                target.Peer.Disconnect(NetDataWriter.FromString(ServerReasons.Kicked));
+                target.Peer.Disconnect(ServerReasons.Kicked);
                 break;
 
             case AdminCommand.ResetMatch:
@@ -965,51 +962,27 @@ public sealed class GameServer : INetEventListener
 
     // ---------- LiteNetLib events ----------
 
-    public void OnConnectionRequest(ConnectionRequest request)
-    {
-        if (players.Count >= options.MaxPlayers)
-        {
-            request.Reject(NetDataWriter.FromString(ServerReasons.Full));
-            return;
-        }
-        // Manual checks (instead of AcceptIfKey) so the player is told why they were refused.
-        string key = request.Data.AvailableBytes > 0 ? request.Data.GetString(64) : "";
-        if (key != ProtocolInfo.ConnectionKey)
-        {
-            Log($"Connection refused from {request.RemoteEndPoint}: different mod version ({key})");
-            request.Reject(NetDataWriter.FromString($"{ServerReasons.VersionMismatch}:{ProtocolInfo.Version}"));
-            return;
-        }
-        string password = request.Data.AvailableBytes > 0 ? request.Data.GetString(128) : "";
-        if (options.Password != "" && password != options.Password)
-        {
-            Log($"Connection refused from {request.RemoteEndPoint}: wrong password");
-            request.Reject(NetDataWriter.FromString(ServerReasons.BadPassword));
-            return;
-        }
-        request.Accept();
-    }
 
-    public void OnPeerConnected(NetPeer peer)
+    public void OnPeerConnected(GamePeer peer)
     {
         players[peer.Id] = new Player { Peer = peer };
         Log($"Connection from {peer} (#{peer.Id})");
     }
 
-    public void OnPeerDisconnected(NetPeer peer, DisconnectInfo info)
+    public void OnPeerDisconnected(GamePeer peer, string reason)
     {
         if (!players.Remove(peer.Id, out Player? p))
         {
             return;
         }
-        Log($"Disconnection of {p.Name} (#{p.Id}): {info.Reason}");
+        Log($"Disconnection of {p.Name} (#{p.Id}): {reason}");
         if (p.HasSaidHello)
         {
             Broadcast(Msg.PlayerLeft(writer, p.Id), DeliveryMethod.ReliableOrdered, except: null);
         }
     }
 
-    public void OnNetworkReceive(NetPeer peer, NetPacketReader reader, byte channel, DeliveryMethod method)
+    public void OnNetworkReceive(GamePeer peer, NetDataReader reader)
     {
         if (!players.TryGetValue(peer.Id, out Player? p) || reader.AvailableBytes < 1)
         {
@@ -1081,20 +1054,12 @@ public sealed class GameServer : INetEventListener
         }
     }
 
-    public void OnNetworkError(System.Net.IPEndPoint endPoint, System.Net.Sockets.SocketError socketError) =>
-        Log($"Network error {endPoint}: {socketError}");
 
-    public void OnNetworkReceiveUnconnected(System.Net.IPEndPoint remoteEndPoint, NetPacketReader reader, UnconnectedMessageType messageType)
-    {
-    }
 
-    public void OnNetworkLatencyUpdate(NetPeer peer, int latency)
-    {
-    }
 
     // ---------- Players ----------
 
-    private void OnHello(Player p, NetPacketReader reader)
+    private void OnHello(Player p, NetDataReader reader)
     {
         if (p.HasSaidHello)
         {

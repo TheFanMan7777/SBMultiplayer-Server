@@ -8,7 +8,7 @@ using static SBMultiplayer.Client.UI.PopupMenu;
 namespace SBMultiplayer.Client.UI;
 
 /// <summary>
-/// F8 menu: connection (server, password, name) and links to the "Display", "Interface" and "Admin" screens.
+/// F8 menu: connection (site, room code, password, name), creating a room, and links to the "Display", "Interface" and "Admin" screens.
 /// Each screen stays short; settings apply immediately and are saved in SBMultiplayer.json.
 /// </summary>
 internal static class MultiplayerMenu
@@ -26,6 +26,7 @@ internal static class MultiplayerMenu
         scene.Add(new StatusUpdater(status));
 
         TextInput server = Input(cfg.Server, 1100f, 80);
+        TextInput room = Input(MultiplayerClient.Instance.RoomCode ?? "", 1100f, 16);
         TextInput password = Input(cfg.ServerPassword, 1100f, 64);
         TextInput name = Input(cfg.PlayerName, 1100f, ProtocolInfo.MaxNameLength);
 
@@ -36,9 +37,16 @@ internal static class MultiplayerMenu
             cfg.PlayerName = name.Text.Trim();
             ModConfig.ForgetEnvironmentOverride();
             ModConfig.Save();
-            MultiplayerClient.Instance.Connect();
+            if (room.Text.Trim().Length > 0)
+            {
+                MultiplayerClient.Instance.JoinRoom(room.Text, password.Text);
+            }
+            else
+            {
+                MultiplayerClient.Instance.Connect();
+            }
         }
-        foreach (TextInput input in new[] { server, password, name })
+        foreach (TextInput input in new[] { server, room, password, name })
         {
             input.OnEnter += () => { ApplyAndConnect(); return true; };
         }
@@ -48,7 +56,8 @@ internal static class MultiplayerMenu
             status,
             Section(Tr.ConnectionSection),
             Row(Tr.ServerField, Field(server)),
-            Row(Tr.PasswordField, Field(password)),
+            Row(Tr.RoomCodeField, Field(room)),
+            Row(Tr.RoomPasswordField, Field(password)),
             Row(Tr.NameField, Field(name)),
             Line(
                 Button(Tr.Connect, ApplyAndConnect),
@@ -63,10 +72,8 @@ internal static class MultiplayerMenu
                     close();
                     MultiplayerClient.Instance.SetSpectating(!MultiplayerClient.Instance.IsSpectating);
                 })),
-            Section(Tr.PlayWithFriendsSection),
-            Line(
-                Button(HostedServer.IsRunning ? Tr.HostManageButton : Tr.HostSection, OpenHost),
-                SteamP2P.Available ? Button(Tr.JoinFriendSection, OpenFriends) : Text("")),
+            Section(Tr.RoomsSection),
+            Line(Button(Tr.CreateRoomButton, OpenCreate)),
             Section(Tr.SettingsSection),
             Line(
                 Button(Tr.DisplayTitle, OpenDisplay),
@@ -76,65 +83,22 @@ internal static class MultiplayerMenu
             Button(Tr.Back, close));
     }
 
-    // ---------- Host a game ----------
+    // ---------- Create a room ----------
 
-    private static void OpenHost() => Show("host", (close, _) => Stack(Title(Tr.HostSection), BuildHostRow(close), Button(Tr.Back, close)));
-
-    private static Element BuildHostRow(Action close)
+    private static void OpenCreate() => Show("create", (close, _) =>
     {
-        if (HostedServer.IsRunning)
+        TextInput password = Input("", 600f, 64);
+        void Create()
         {
-            var addresses = HostedServer.LocalAddresses().Select(a => $"{a}:{HostedServer.Port}").ToList();
-            return Stack(
-                Text(Tr.HostRunning(HostedServer.Port)),
-                Text(Tr.HostAddresses(addresses.Count > 0 ? string.Join(", ", addresses) : "?", HostedServer.Port)),
-                ModConfig.Current.SteamP2PHost && SteamP2P.Available ? Text(Tr.SteamHostVisible) : null,
-                Button(Tr.HostStop, () =>
-                {
-                    close();
-                    MultiplayerClient.Instance.StopHosting();
-                }));
-        }
-        TextInput port = Input(ModConfig.Current.HostPort.ToString(), 300f, 5);
-        void Host()
-        {
-            if (!int.TryParse(port.Text.Trim(), out int p) || p < 1 || p > 65535)
-            {
-                Notifications.Warn(Tr.HostBadPort);
-                return;
-            }
-            ModConfig.Current.HostPort = p;
-            ModConfig.Save();
             close();
-            MultiplayerClient.Instance.HostGame(p);
+            MultiplayerClient.Instance.CreateRoom(password.Text.Trim());
         }
-        port.OnEnter += () => { Host(); return true; };
+        password.OnEnter += () => { Create(); return true; };
         return Stack(
-            Line(Text(Tr.HostPortLabel), Field(port), Button(Tr.HostButton, Host)),
-            SteamP2P.Available ? GameAccess.OptionsUi.GetCheckboxRow(Tr.SteamHostCheckbox, ModSettings.SteamP2PHost) : null);
-    }
-
-    // ---------- Join a Steam friend (P2P) ----------
-
-    private static void OpenFriends() => Show("friends", (close, _) =>
-    {
-        var friends = SteamP2P.FriendsHosting();
-        Element list = friends.Count == 0
-            ? Text(Tr.NoFriendHosting)
-            : Grid(friends.Select(f => Button(f.SameVersion ? f.Name : $"{f.Name} ({Tr.OtherVersion})", () =>
-            {
-                close();
-                MultiplayerClient.Instance.JoinFriend(f.SteamId, f.Name);
-            })).ToList(), 3);
-        return Stack(
-            Title(Tr.JoinFriendSection),
-            Text(Tr.JoinFriendHint),
-            list,
-            Line(Button(Tr.Refresh, () =>
-            {
-                close();
-                OpenFriends();
-            }), Button(Tr.Back, close)));
+            Title(Tr.CreateRoomButton),
+            Text(Tr.CreateRoomHint),
+            Row(Tr.RoomPasswordField, Field(password)),
+            Line(Button(Tr.CreateRoomButton, Create), Button(Tr.Back, close)));
     });
 
     // ---------- Display: how other players are shown ----------

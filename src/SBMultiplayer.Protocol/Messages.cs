@@ -37,6 +37,15 @@ public static class ServerReasons
     public const string BadPassword = "BAD_PASSWORD";
 
     public const string Kicked = "KICKED";
+
+    /// <summary>The website has no room with this code (it closed, or the site restarted).</summary>
+    public const string RoomNotFound = "ROOM_NOT_FOUND";
+
+    /// <summary>Too many attempts from this address: wait before trying again.</summary>
+    public const string RateLimited = "RATE_LIMITED";
+
+    /// <summary>Client side only: the website or the game server could not be reached at all.</summary>
+    public const string Unreachable = "UNREACHABLE";
 }
 
 /// <summary>

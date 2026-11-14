@@ -23,14 +23,12 @@
 
   <ItemGroup>
     <ProjectReference Include="../SBMultiplayer.Protocol/SBMultiplayer.Protocol.csproj" />
-    <!-- The game can host a game itself (listen server): same server code as the dedicated server. -->
-    <ProjectReference Include="../SBMultiplayer.Server/SBMultiplayer.Server.csproj" />
   </ItemGroup>
 
   <!-- After each build: copy the mod into the game folder -->
   <Target Name="DeployMod" AfterTargets="Build" Condition="Exists('$(GameDir)/STUNTBOOST.dll')">
     <ItemGroup>
-      <ModFiles Include="$(OutDir)SBMultiplayer.Client.dll;$(OutDir)SBMultiplayer.Client.pdb;$(OutDir)0Harmony.dll;$(OutDir)LiteNetLib.dll;$(OutDir)SBMultiplayer.Protocol.dll;$(OutDir)SBMultiplayer.Server.dll" />
+      <ModFiles Include="$(OutDir)SBMultiplayer.Client.dll;$(OutDir)SBMultiplayer.Client.pdb;$(OutDir)0Harmony.dll;$(OutDir)LiteNetLib.dll;$(OutDir)SBMultiplayer.Protocol.dll" />
     </ItemGroup>
     <MakeDir Directories="$(ModDeployDir)" />
     <Copy SourceFiles="@(ModFiles)" DestinationFolder="$(ModDeployDir)" SkipUnchangedFiles="true" />

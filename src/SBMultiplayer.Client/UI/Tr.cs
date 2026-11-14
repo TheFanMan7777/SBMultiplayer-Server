@@ -252,7 +252,19 @@ internal static class Tr
         T($"SBMultiplayer v{version}: incompatible with this game version, update the mod",
           $"SBMultiplayer v{version} : incompatible avec cette version du jeu, mets le mod à jour");
 
-    // ---------- Héberger une partie ----------
+    // ---------- Salles (hébergées par le site) ----------
+    public static string RoomsSection => T("Rooms", "Salles");
+    public static string CreateRoomButton => T("Create a room", "Créer une salle");
+    public static string CreateRoomHint => T("Creates a room with a code your friends can type. The password is optional.", "Crée une salle avec un code à donner à tes amis. Le mot de passe est facultatif.");
+    public static string RoomCodeField => T("Room code", "Code de la salle");
+    public static string RoomPasswordField => T("Room password", "Mot de passe de la salle");
+    public static string RoomCreated(string code) => T($"Room created: {code}. Friends type this code in F8 > Room code.", $"Salle créée : {code}. Tes amis tapent ce code dans F8 > Code de la salle.");
+    public static string RoomCreateFailed(string error) => T($"Could not create the room ({error})", $"Impossible de créer la salle ({error})");
+    public static string NoRoomChosen => T("Type a room code in F8 first", "Tape d'abord un code de salle dans F8");
+    public static string RoomNotFound => T("No room with this code (it closed, or the site restarted)", "Aucune salle avec ce code (elle est fermée, ou le site a redémarré)");
+    public static string RateLimited => T("Too many attempts: wait a minute", "Trop de tentatives : attends une minute");
+
+    // ---------- Héberger une partie (ancien hébergement dans le jeu, plus utilisé) ----------
     public static string HostSection => T("Host a game", "Héberger une partie");
     public static string HostManageButton => T("My hosted game", "Ma partie hébergée");
     public static string PlayWithFriendsSection => T("Play with friends", "Jouer entre amis");

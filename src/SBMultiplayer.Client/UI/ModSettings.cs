@@ -29,8 +29,6 @@ internal static class ModSettings
 
     public static ValueEvent<bool> NotificationsOnTop { get; } = Bind(ModConfig.Current.NotificationsOnTop, v => ModConfig.Current.NotificationsOnTop = v);
 
-    public static ValueEvent<bool> SteamP2PHost { get; } = Bind(ModConfig.Current.SteamP2PHost, v => ModConfig.Current.SteamP2PHost = v);
-
     private static ValueEvent<T> Bind<T>(T initial, Action<T> apply)
     {
         var value = new ValueEvent<T>(initial);
