@@ -1,10 +1,12 @@
 # Builds the release packages, pushes the branch and tag, and creates the GitHub release with the two zips.
 # Run from the repository root in PowerShell, after committing everything:
-#   .\packaging\release.ps1 -Repo TheFanMan7777/SBMultiplayer-Server
+#   .\packaging\release.ps1 -Repo TheFanMan7777/SBMultiplayer-Server -GameDir "D:\SteamLibrary\steamapps\common\STUNTBOOST"
 # Needs: .NET 8 SDK, git, and the GitHub CLI (gh) logged in (gh auth login).
 # GitHub adds the source code .zip and .tar.gz for the tag by itself; they can't be uploaded.
 param(
     [Parameter(Mandatory = $true)] [string] $Repo,
+    # The STUNTBOOST install folder: the mod is built against its DLLs.
+    [Parameter(Mandatory = $true)] [string] $GameDir,
     [string] $Remote = "https://github.com/$Repo.git",
     [switch] $Draft
 )
@@ -22,7 +24,7 @@ if (git tag -l $tag) { throw "Tag $tag already exists. Bump the version in Direc
 Write-Host "Releasing $tag from branch $branch to $Repo"
 
 # 1) Mod package: the five files the mod needs, plus the install notes. No settings file, so players keep theirs.
-dotnet build src\SBMultiplayer.Client -c Release -nologo -v quiet
+dotnet build src\SBMultiplayer.Client -c Release -nologo -v quiet "-p:GameDir=$GameDir"
 if ($LASTEXITCODE -ne 0) { throw "Client build failed" }
 $out = "src\SBMultiplayer.Client\bin\Release\net8.0"
 Remove-Item dist\pkg -Recurse -Force -ErrorAction SilentlyContinue
