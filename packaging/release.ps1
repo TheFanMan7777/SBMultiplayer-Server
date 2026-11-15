@@ -16,7 +16,7 @@ $version = [regex]::Match((Get-Content Directory.Build.props -Raw), "<Version>([
 $tag = "v$version"
 $branch = git rev-parse --abbrev-ref HEAD
 if ($LASTEXITCODE -ne 0) { throw "git failed" }
-if (git status --porcelain) { throw "Uncommitted changes. Commit or stash them first." }
+if (git status --porcelain --untracked-files=no) { throw "Tracked files have uncommitted changes. Commit them first (untracked build folders are fine)." }
 if (git tag -l $tag) { throw "Tag $tag already exists. Bump the version in Directory.Build.props first." }
 
 Write-Host "Releasing $tag from branch $branch to $Repo"
