@@ -16,7 +16,9 @@ SBMultiplayer - unofficial multiplayer mod for STUNTBOOST
    Windows (no space before the &&!):
      cmd /c "set DOTNET_STARTUP_HOOKS=C:\path\to\STUNTBOOST\SBMultiplayer\SBMultiplayer.Client.dll&& %command%"
 
-3) Start the game, press F8 and enter the server address (address:port).
+3) Start the game and press F8. Either enter a server address (address:port), or use the "Rooms" section:
+   type a room code (and its password, if it has one) and click "Join room", or click "Create a room" to make
+   one on the website and share its code with your friends. Rooms need no open port on your side.
    F7 takes you to the current round's map. Enter opens the chat (/help for commands),
    hold Tab to see the player list.
    F8 > Spectate to watch: Left / Right to switch player, F for the free camera.
