@@ -154,3 +154,21 @@ If your router is behind CGNAT, or port forwarding isn't possible: install [Tail
 ## Tested
 
 2026-11-14: 3 players (Linux, over the internet), 6 official maps. Smooth, with only the intended 100 ms interpolation delay.
+
+## Web rooms (website, no open port)
+
+Players can also create a room on the website, with a code to share and an optional password. Their game goes through the
+website's WebSocket, so the host doesn't open a port. The room host runs the rooms behind one HTTP port:
+
+```sh
+export SBM_GATEWAY_SECRET="<at least 32 characters, the same value the website uses>"
+dotnet SBMultiplayer.Server.dll --rooms 9000 --max-rooms 20
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--rooms <port>` | (off) | Serve web rooms over HTTP on this port. Without it, the server runs as a normal UDP server |
+| `--max-rooms <n>` | 20 | Most rooms open at once |
+
+Each room is a game server of its own, with the same settings as a UDP server. The room's password is checked by the
+website, not by the room host.

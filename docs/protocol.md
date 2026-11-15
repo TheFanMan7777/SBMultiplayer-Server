@@ -41,6 +41,18 @@ never resets a setting it doesn't know.
 `Hello`, the server sends its own in `Welcome`. Use `Capabilities.Has("name")` to decide whether to send a new
 message or to show a button. Known features: `dnf-fills-quota` (0.21.0, the server knows `MatchSettings.DnfFillsQuota`).
 
+## Web rooms (0.22.0)
+
+A room made on the website is reached over WebSocket instead of UDP. The protocol is the same: each binary WebSocket
+message carries one game message, in the same format. Only the connection differs, so this doesn't change
+`ProtocolInfo.Version`.
+
+- The client sends `x-sbm-version` (equal to `ProtocolInfo.ConnectionKey`) and, if the room has one, `x-room-password`.
+  The website checks the password itself before it bridges the connection to the game server.
+- Refusals use the HTTP status of the handshake (401 wrong password, 404 no room, 426 version, 429 rate limit, 503 full),
+  or a WebSocket close reason. The client translates them with the same codes as UDP.
+- New reason codes: `ROOM_NOT_FOUND`, `RATE_LIMITED`, `UNREACHABLE`. An older client shows the code as plain text.
+
 ## Breaking changes (to avoid)
 
 - Removing, reordering or changing the type of an existing field.
