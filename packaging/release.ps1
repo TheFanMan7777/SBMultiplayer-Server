@@ -12,7 +12,7 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location (Split-Path -Parent $PSScriptRoot)
 
-$version = ([xml](Get-Content Directory.Build.props)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
+$version = [regex]::Match((Get-Content Directory.Build.props -Raw), "<Version>([^<]+)</Version>").Groups[1].Value
 $tag = "v$version"
 $branch = git rev-parse --abbrev-ref HEAD
 if ($LASTEXITCODE -ne 0) { throw "git failed" }
@@ -52,8 +52,8 @@ git tag -a $tag -m "SBMultiplayer $tag"
 git push $Remote $tag
 if ($LASTEXITCODE -ne 0) { throw "Pushing the tag failed" }
 
-$args = @("release", "create", $tag, $clientZip, $serverZip, "--repo", $Repo, "--title", "SBMultiplayer $tag", "--generate-notes")
-if ($Draft) { $args += "--draft" }
-gh @args
+$ghArgs = @("release", "create", $tag, $clientZip, $serverZip, "--repo", $Repo, "--title", "SBMultiplayer $tag", "--generate-notes")
+if ($Draft) { $ghArgs += "--draft" }
+gh @ghArgs
 if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }
 Write-Host "Done: https://github.com/$Repo/releases/tag/$tag"
