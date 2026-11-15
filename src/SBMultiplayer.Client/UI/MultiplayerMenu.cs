@@ -28,6 +28,23 @@ internal static class MultiplayerMenu
         TextInput server = Input(cfg.Server, 80);
         TextInput password = Input(cfg.ServerPassword, 64);
         TextInput name = Input(cfg.PlayerName, ProtocolInfo.MaxNameLength);
+        TextInput roomCode = Input("", 16);
+        TextInput roomPassword = Input("", 64);
+
+        void JoinRoom()
+        {
+            string code = roomCode.Text.Trim();
+            if (code == "")
+            {
+                Notifications.Warn(Tr.NoRoomChosen);
+                return;
+            }
+            cfg.PlayerName = name.Text.Trim();
+            ModConfig.ForgetEnvironmentOverride();
+            ModConfig.Save();
+            MultiplayerClient.Instance.JoinRoom(code, roomPassword.Text);
+        }
+        roomCode.OnEnter += () => { JoinRoom(); return true; };
 
         void ApplyAndConnect()
         {
@@ -64,6 +81,12 @@ internal static class MultiplayerMenu
                     close();
                     MultiplayerClient.Instance.SetSpectating(!MultiplayerClient.Instance.IsSpectating);
                 })),
+            Section(Tr.RoomsSection),
+            Row(Tr.RoomCodeField, Field(roomCode)),
+            Row(Tr.RoomPasswordField, Field(roomPassword)),
+            Buttons(
+                Button(Tr.JoinRoomButton, JoinRoom),
+                Button(Tr.CreateRoomButton, OpenCreateRoom)),
             Section(Tr.PlayWithFriendsSection),
             Buttons(
                 Button(HostedServer.IsRunning ? Tr.HostManageButton : Tr.HostSection, OpenHost),
@@ -78,6 +101,24 @@ internal static class MultiplayerMenu
             Text(Tr.KeysHint(Tr.KeyName(cfg.MenuKey), Tr.KeyName(cfg.RejoinKey), Tr.KeyName(cfg.ChatKey), Tr.KeyName(cfg.ScoreboardKey))),
             Button(Tr.Back, close));
     }
+
+    // ---------- Create a room on the website ----------
+
+    private static void OpenCreateRoom() => Show("create-room", (close, _) =>
+    {
+        TextInput password = Input("", 64);
+        void Create()
+        {
+            close();
+            MultiplayerClient.Instance.CreateRoom(password.Text);
+        }
+        password.OnEnter += () => { Create(); return true; };
+        return Stack(
+            Title(Tr.CreateRoomButton),
+            Text(Tr.CreateRoomHint),
+            Row(Tr.RoomPasswordField, Field(password)),
+            Buttons(Button(Tr.CreateRoomButton, Create), Button(Tr.Back, close)));
+    });
 
     // ---------- Host a game ----------
 

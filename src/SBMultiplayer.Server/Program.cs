@@ -21,6 +21,10 @@ const string Help = """
       --echo                sends each player their own delayed board back (solo testing)
       --echo-delay <s>      echo delay in seconds (default 2)
 
+    Web rooms (for the website; no UDP port per room):
+      --rooms <port>        serve web rooms over HTTP on this port (needs SBM_GATEWAY_SECRET, 32+ characters)
+      --max-rooms <n>       most rooms open at once (default 20)
+
     Console commands:
       list, round, standings, next, restart, pause, extend <s>, map <index>, kick <id>, resetmatch, quit
     """;
@@ -28,6 +32,8 @@ const string Help = """
 // ---------- Arguments ----------
 var overrides = new List<Action<ServerOptions>>();
 string? configPath = null;
+int? roomsPort = null;
+int maxRooms = 20;
 for (int i = 0; i < args.Length; i++)
 {
     string arg = args[i];
@@ -74,6 +80,8 @@ for (int i = 0; i < args.Length; i++)
             case "--results": { double v = Seconds(); overrides.Add(o => o.ResultsSeconds = v); break; }
             case "--echo": overrides.Add(o => o.Echo = true); break;
             case "--echo-delay": { double v = Seconds(); overrides.Add(o => o.EchoDelaySeconds = v); break; }
+            case "--rooms": roomsPort = int.Parse(Next()); break;
+            case "--max-rooms": maxRooms = int.Parse(Next()); break;
             case "-h":
             case "--help":
                 Console.WriteLine(Help);
@@ -103,6 +111,11 @@ catch (Exception e)
 foreach (var apply in overrides)
 {
     apply(options);
+}
+
+if (roomsPort is int webPort)
+{
+    return RunRooms(webPort, maxRooms);
 }
 
 var server = new GameServer(options, configPath);
@@ -184,3 +197,29 @@ while (!cts.IsCancellationRequested)
 server.Stop();
 Console.WriteLine("Server stopped.");
 return 0;
+
+// Serves many rooms behind one HTTP port for the website. The website creates and deletes rooms and bridges players' WebSockets.
+static int RunRooms(int port, int maxRooms)
+{
+    string? secret = Environment.GetEnvironmentVariable("SBM_GATEWAY_SECRET");
+    if (secret == null || secret.Length < 32)
+    {
+        Console.Error.WriteLine("Set SBM_GATEWAY_SECRET to a secret of at least 32 characters. The website must use the same value.");
+        return 1;
+    }
+
+    var rooms = new RoomHost(port, secret, maxRooms);
+    rooms.Start();
+
+    using var cts = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, e) =>
+    {
+        e.Cancel = true;
+        cts.Cancel();
+    };
+    Console.WriteLine($"Web room host on HTTP port {port}, {maxRooms} rooms max. Press Ctrl+C to stop.");
+    rooms.Run(cts.Token);
+    rooms.Stop();
+    Console.WriteLine("Server stopped.");
+    return 0;
+}

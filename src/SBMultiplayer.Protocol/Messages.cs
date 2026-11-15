@@ -69,6 +69,15 @@ public static class ServerReasons
     public const string BadPassword = "BAD_PASSWORD";
 
     public const string Kicked = "KICKED";
+
+    /// <summary>Web rooms: no room has that code (it was closed or never existed).</summary>
+    public const string RoomNotFound = "ROOM_NOT_FOUND";
+
+    /// <summary>Web rooms: too many attempts from this address; wait and try again.</summary>
+    public const string RateLimited = "RATE_LIMITED";
+
+    /// <summary>Web rooms: the website could not reach the room's game server.</summary>
+    public const string Unreachable = "UNREACHABLE";
 }
 
 /// <summary>

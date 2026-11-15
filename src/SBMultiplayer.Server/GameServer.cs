@@ -22,7 +22,7 @@ public sealed class GameServer : INetEventListener
 
     private sealed class Player
     {
-        public required NetPeer Peer { get; init; }
+        public required IPeer Peer { get; init; }
         public int Id => Peer.Id;
         public string Name { get; set; } = "";
         public string MapKey { get; set; } = "";
@@ -41,7 +41,8 @@ public sealed class GameServer : INetEventListener
     }
 
     private readonly ServerOptions options;
-    private readonly NetManager net;
+    /// <summary>The UDP listener. Null for a web room, which has no port of its own.</summary>
+    private readonly NetManager? net;
     private readonly NetDataWriter writer = new();
     private readonly Dictionary<int, Player> players = new();
     private readonly Queue<(double Due, int PeerId, PlayerState State)> echoQueue = new();
@@ -118,16 +119,19 @@ public sealed class GameServer : INetEventListener
     /// <summary>Start of the hunt: the mice are frozen, the hunter is released.</summary>
     private double SeekStart => (startAt ?? double.MaxValue / 2) + options.HideSeconds;
 
-    public GameServer(ServerOptions options, string? configPath = null)
+    public GameServer(ServerOptions options, string? configPath = null, bool listenUdp = true)
     {
         this.options = options;
         this.configPath = configPath;
-        net = new NetManager(this)
+        if (listenUdp)
         {
-            AutoRecycle = true,
-            UpdateTime = 5,
-            DisconnectTimeout = 10_000,
-        };
+            net = new NetManager(this)
+            {
+                AutoRecycle = true,
+                UpdateTime = 5,
+                DisconnectTimeout = 10_000,
+            };
+        }
     }
 
     public int PlayerCount => players.Count;
@@ -140,11 +144,12 @@ public sealed class GameServer : INetEventListener
 
     public void Start()
     {
-        if (!net.Start(options.Port))
+        if (net != null && !net.Start(options.Port))
         {
             throw new InvalidOperationException($"Cannot listen on UDP port {options.Port}");
         }
-        Log($"\"{options.ServerName}\" started on UDP port {options.Port} (protocol v{ProtocolInfo.Version}, {options.MaxPlayers} players max"
+        string transport = net != null ? $"on UDP port {options.Port}" : "as a web room";
+        Log($"\"{options.ServerName}\" started {transport} (protocol v{ProtocolInfo.Version}, {options.MaxPlayers} players max"
             + (options.Password != "" ? ", password protected" : "")
             + (options.AdminPassword != "" ? ", in-game admin enabled" : "")
             + (options.Echo ? ", echo mode" : "") + ")");
@@ -173,7 +178,7 @@ public sealed class GameServer : INetEventListener
 
     public void Poll()
     {
-        net.PollEvents();
+        net?.PollEvents();
         if (Now - lastStatesFlush >= StatesFlushSeconds)
         {
             FlushStates();
@@ -191,7 +196,7 @@ public sealed class GameServer : INetEventListener
         UpdateRound();
     }
 
-    public void Stop() => net.Stop(sendDisconnectMessages: true);
+    public void Stop() => net?.Stop(sendDisconnectMessages: true);
 
     // ---------- Console ----------
 
@@ -1125,7 +1130,7 @@ public sealed class GameServer : INetEventListener
                 }
                 Log($"{target.Name} (#{target.Id}) kicked by {by}");
                 BroadcastEvent(ServerEvents.PlayerKicked, target.Name);
-                target.Peer.Disconnect(NetDataWriter.FromString(ServerReasons.Kicked));
+                target.Peer.Disconnect(ServerReasons.Kicked);
                 break;
 
             case AdminCommand.ResetMatch:
@@ -1299,44 +1304,70 @@ public sealed class GameServer : INetEventListener
 
     // ---------- LiteNetLib events ----------
 
-    public void OnConnectionRequest(ConnectionRequest request)
+    /// <summary>
+    /// Why a join must be refused, or null to accept it. Shared by the UDP listener and the web room host,
+    /// so both transports give the same answers. The website checks room passwords itself, so web joins skip that step.
+    /// </summary>
+    public string? RefuseReason(string key, string password, bool checkPassword = true)
     {
         if (players.Count >= options.MaxPlayers)
         {
-            request.Reject(NetDataWriter.FromString(ServerReasons.Full));
-            return;
+            return ServerReasons.Full;
         }
-        // Manual checks (instead of AcceptIfKey) so the player is told why they were refused.
-        string key = request.Data.AvailableBytes > 0 ? request.Data.GetString(64) : "";
         if (key != ProtocolInfo.ConnectionKey)
         {
-            Log($"Connection refused from {request.RemoteEndPoint}: different mod version ({key})");
-            request.Reject(NetDataWriter.FromString($"{ServerReasons.VersionMismatch}:{ProtocolInfo.Version}"));
-            return;
+            return $"{ServerReasons.VersionMismatch}:{ProtocolInfo.Version}";
         }
-        string password = request.Data.AvailableBytes > 0 ? request.Data.GetString(128) : "";
-        if (options.Password != "" && password != options.Password)
+        if (checkPassword && options.Password != "" && password != options.Password)
         {
-            Log($"Connection refused from {request.RemoteEndPoint}: wrong password");
-            request.Reject(NetDataWriter.FromString(ServerReasons.BadPassword));
+            return ServerReasons.BadPassword;
+        }
+        return null;
+    }
+
+    public void OnConnectionRequest(ConnectionRequest request)
+    {
+        string key = request.Data.AvailableBytes > 0 ? request.Data.GetString(64) : "";
+        string password = request.Data.AvailableBytes > 0 ? request.Data.GetString(128) : "";
+        string? refusal = RefuseReason(key, password);
+        if (refusal != null)
+        {
+            // A full server is normal; the other refusals are worth a line in the log.
+            if (refusal != ServerReasons.Full)
+            {
+                Log($"Connection refused from {request.RemoteEndPoint}: {refusal}");
+            }
+            request.Reject(NetDataWriter.FromString(refusal));
             return;
         }
         request.Accept();
     }
 
-    public void OnPeerConnected(NetPeer peer)
+    public void OnPeerConnected(NetPeer peer) => AddPlayer(new UdpPeer(peer));
+
+    public void OnPeerDisconnected(NetPeer peer, DisconnectInfo info) => RemovePlayer(peer.Id, info.Reason.ToString());
+
+    /// <summary>A player joined through a web room. The room host has already called <see cref="RefuseReason"/>.</summary>
+    public void OnWebPeerConnected(IPeer peer) => AddPlayer(peer);
+
+    public void OnWebPeerDisconnected(IPeer peer, string reason) => RemovePlayer(peer.Id, reason);
+
+    /// <summary>One message from a web room player. Runs on the game thread.</summary>
+    public void OnWebMessage(IPeer peer, byte[] data) => Receive(peer.Id, new NetDataReader(data));
+
+    private void AddPlayer(IPeer peer)
     {
         players[peer.Id] = new Player { Peer = peer };
         Log($"Connection from {peer} (#{peer.Id})");
     }
 
-    public void OnPeerDisconnected(NetPeer peer, DisconnectInfo info)
+    private void RemovePlayer(int id, string reason)
     {
-        if (!players.Remove(peer.Id, out Player? p))
+        if (!players.Remove(id, out Player? p))
         {
             return;
         }
-        Log($"Disconnection of {p.Name} (#{p.Id}): {info.Reason}");
+        Log($"Disconnection of {p.Name} (#{p.Id}): {reason}");
         lastPosition.Remove(p.Id);
         lastStateAt.Remove(p.Id);
         OnLeftHunt(p);
@@ -1346,9 +1377,12 @@ public sealed class GameServer : INetEventListener
         }
     }
 
-    public void OnNetworkReceive(NetPeer peer, NetPacketReader reader, byte channel, DeliveryMethod method)
+    public void OnNetworkReceive(NetPeer peer, NetPacketReader reader, byte channel, DeliveryMethod method) =>
+        Receive(peer.Id, reader);
+
+    private void Receive(int id, NetDataReader reader)
     {
-        if (!players.TryGetValue(peer.Id, out Player? p) || reader.AvailableBytes < 1)
+        if (!players.TryGetValue(id, out Player? p) || reader.AvailableBytes < 1)
         {
             return;
         }
@@ -1439,7 +1473,7 @@ public sealed class GameServer : INetEventListener
 
     // ---------- Players ----------
 
-    private void OnHello(Player p, NetPacketReader reader)
+    private void OnHello(Player p, NetDataReader reader)
     {
         if (p.HasSaidHello)
         {

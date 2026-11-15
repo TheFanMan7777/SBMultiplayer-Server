@@ -22,6 +22,9 @@ internal sealed class ModConfig
     /// <summary>Server address, "host:port" or "host".</summary>
     public string Server { get; set; } = $"127.0.0.1:{ProtocolInfo.DefaultPort}";
 
+    /// <summary>Website that hosts rooms ("Create a room" and room codes), e.g. https://playsbm.thefanclub.cc.</summary>
+    public string RoomSite { get; set; } = "https://playsbm.thefanclub.cc";
+
     /// <summary>Displayed name. Empty = Steam name.</summary>
     public string PlayerName { get; set; } = "";
 
@@ -231,6 +234,15 @@ internal sealed class ModConfig
             }
         }
         // Next format: if (c.ConfigVersion < 2) { ... }
+    }
+
+    /// <summary>The WebSocket address of a room: the room site with wss:// (or ws://) and /multiplayer/ws/CODE.</summary>
+    public Uri RoomSocketUri(string code)
+    {
+        string site = RoomSite.Trim().TrimEnd('/');
+        if (site.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) site = "wss://" + site[8..];
+        else if (site.StartsWith("http://", StringComparison.OrdinalIgnoreCase)) site = "ws://" + site[7..];
+        return new Uri($"{site}/multiplayer/ws/{Uri.EscapeDataString(code)}");
     }
 
     public (string Host, int Port) ParseServer()

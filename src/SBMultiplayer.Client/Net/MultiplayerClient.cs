@@ -1,6 +1,9 @@
 using System.Collections.Concurrent;
 using System.Net;
+using System.Net.Http;
 using System.Net.Sockets;
+using System.Text;
+using System.Text.Json;
 using LiteNetLib;
 using LiteNetLib.Utils;
 using Microsoft.Xna.Framework.Input;
@@ -25,10 +28,26 @@ internal sealed class MultiplayerClient : INetEventListener
     private readonly NetDataWriter writer = new();
     private NetManager? net;
     private volatile NetPeer? server;
+
+    /// <summary>The WebSocket to the room we're in (website rooms). Null when we connect over UDP.</summary>
+    private volatile WsConnection? webServer;
+
+    /// <summary>Room the player is in: its WebSocket address and password. Room mode is on while roomUrl is set.</summary>
+    private string? roomUrl;
+    private string? roomPassword;
+    private bool roomExitHooked;
+
+    /// <summary>A room created on the website, waiting to be joined on the game thread (see <see cref="EnsureConnected"/>).</summary>
+    private sealed record PendingRoom(string Code, string Password, string AdminPassword);
+    private volatile PendingRoom? pendingRoom;
+    private volatile string? pendingRoomError;
     private double lastConnectAttempt = double.NegativeInfinity;
     private string mapKey = "";
     private string playerName = "Joueur";
     private string serverAddress = "";
+
+    /// <summary>The room the player is in (its code, shown in the menu). Null when not in a room.</summary>
+    public string? RoomCode { get; private set; }
 
     /// <summary>Disconnection requested from the menu: no automatic reconnection.</summary>
     private bool userDisconnected;
@@ -72,9 +91,11 @@ internal sealed class MultiplayerClient : INetEventListener
 
     public int? LocalId { get; private set; }
 
-    public bool IsReady => server != null && LocalId.HasValue;
+    private bool HasLink => server != null || webServer != null;
 
-    public bool IsConnecting => server != null && !LocalId.HasValue;
+    public bool IsReady => HasLink && LocalId.HasValue;
+
+    public bool IsConnecting => HasLink && !LocalId.HasValue;
 
     public bool IsUserDisconnected => userDisconnected;
 
@@ -381,6 +402,7 @@ internal sealed class MultiplayerClient : INetEventListener
             Notifications.Warn(Tr.HostFailed(error));
             return;
         }
+        ClearRoom();
         SteamP2P.StopJoin();
         hostAddress = $"127.0.0.1:{port}";
         hostAddressLabel = null;
@@ -411,6 +433,7 @@ internal sealed class MultiplayerClient : INetEventListener
         }
         try
         {
+            ClearRoom();
             int localPort = SteamP2P.StartJoin(steamId);
             hostAddress = $"127.0.0.1:{localPort}";
             hostAddressLabel = $"Steam: {name}";
@@ -439,6 +462,72 @@ internal sealed class MultiplayerClient : INetEventListener
         Notifications.Info(Tr.HostStopped);
     }
 
+    // ---------- Rooms (website) ----------
+
+    /// <summary>Creates a room on the website, then joins it as its admin. The web request runs off the game thread.</summary>
+    public void CreateRoom(string password)
+    {
+        string api = ModConfig.Current.RoomSite.Trim().TrimEnd('/') + "/multiplayer/api/rooms";
+        Task.Run(async () =>
+        {
+            try
+            {
+                using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+                string json = JsonSerializer.Serialize(new { password });
+                using HttpResponseMessage response = await http.PostAsync(api, new StringContent(json, Encoding.UTF8, "application/json"));
+                string text = await response.Content.ReadAsStringAsync();
+                if (!response.IsSuccessStatusCode)
+                {
+                    pendingRoomError = ((int)response.StatusCode).ToString();
+                    return;
+                }
+                using JsonDocument doc = JsonDocument.Parse(text);
+                JsonElement root = doc.RootElement;
+                // Only the code is used: the address is rebuilt from our own site setting.
+                string code = root.GetProperty("code").GetString() ?? "";
+                string admin = root.GetProperty("adminPassword").GetString() ?? "";
+                pendingRoom = new PendingRoom(code, password, admin);
+            }
+            catch (Exception e)
+            {
+                ModLog.Error("Room creation failed", e);
+                pendingRoomError = e.GetType().Name;
+            }
+        });
+    }
+
+    /// <summary>Joins a room by its code, with its password if it has one.</summary>
+    public void JoinRoom(string code, string? password)
+    {
+        code = code.Trim().ToUpperInvariant();
+        JoinRoomNow(code, ModConfig.Current.RoomSocketUri(code).ToString(), password, null);
+    }
+
+    private void JoinRoomNow(string code, string url, string? password, string? adminPassword)
+    {
+        if (HostedServer.IsRunning)
+        {
+            StopHosting();
+        }
+        SteamP2P.StopJoin();
+        hostAddress = null;
+        hostAddressLabel = null;
+        RoomCode = code;
+        roomUrl = url;
+        roomPassword = string.IsNullOrEmpty(password) ? null : password;
+        hostAdminPassword = adminPassword; // the creator of a room is its admin
+        ConnectNow();
+    }
+
+    /// <summary>Leaves room mode, so the next connection goes to the configured server or to a hosted or friend game.</summary>
+    private void ClearRoom()
+    {
+        RoomCode = null;
+        roomUrl = null;
+        roomPassword = null;
+        hostAdminPassword = null;
+    }
+
     /// <summary>(Re)connects with the configured address and name.</summary>
     public void Connect()
     {
@@ -452,13 +541,14 @@ internal sealed class MultiplayerClient : INetEventListener
             hostAddress = null;
             hostAddressLabel = null;
         }
+        ClearRoom();
         ConnectNow();
     }
 
     private void ConnectNow()
     {
         userDisconnected = false;
-        if (server != null)
+        if (HasLink)
         {
             DropConnection("reconnecting");
         }
@@ -470,7 +560,7 @@ internal sealed class MultiplayerClient : INetEventListener
     public void Disconnect()
     {
         userDisconnected = true;
-        if (server != null)
+        if (HasLink)
         {
             DropConnection("manual disconnection");
             Notifications.Info(Tr.DisconnectedByUser);
@@ -480,8 +570,11 @@ internal sealed class MultiplayerClient : INetEventListener
     private void DropConnection(string why)
     {
         NetPeer? peer = server;
+        WsConnection? web = webServer;
         server = null; // this peer's disconnection event will be ignored
+        webServer = null;
         peer?.Disconnect();
+        web?.Disconnect(why);
         ModLog.Info($"Connection closed ({why})");
         ResetSessionState();
     }
@@ -637,16 +730,34 @@ internal sealed class MultiplayerClient : INetEventListener
     /// <summary>Call regularly from the game thread: (re)connects if needed.</summary>
     public void EnsureConnected()
     {
+        if (pendingRoom is { } created)
+        {
+            pendingRoom = null;
+            JoinRoomNow(created.Code, ModConfig.Current.RoomSocketUri(created.Code).ToString(), created.Password, created.AdminPassword);
+            Notifications.Good(Tr.RoomCreated(created.Code));
+            return;
+        }
+        if (pendingRoomError is string createError)
+        {
+            pendingRoomError = null;
+            Notifications.Warn(Tr.RoomCreateFailed(createError));
+        }
         if (!ModConfig.Current.AutoConnect && lastConnectAttempt == double.NegativeInfinity && !userDisconnected)
         {
             // AutoConnect = false: wait for the player to connect from the menu.
             userDisconnected = true;
         }
-        if (userDisconnected || server != null || NetClock.Now - lastConnectAttempt < ReconnectDelaySeconds)
+        if (userDisconnected || HasLink || NetClock.Now - lastConnectAttempt < ReconnectDelaySeconds)
         {
             return;
         }
         lastConnectAttempt = NetClock.Now;
+
+        if (roomUrl != null)
+        {
+            ConnectRoom();
+            return;
+        }
 
         try
         {
@@ -671,18 +782,7 @@ internal sealed class MultiplayerClient : INetEventListener
                 };
             }
 
-            playerName = ResolvePlayerName();
-            try
-            {
-                if (GameAccess.Game != null)
-                {
-                    localSkin = SkinCache.LocalSkinId(GameAccess.Game);
-                }
-            }
-            catch (Exception)
-            {
-                // no save yet (first launch): the skin is sent later by TrackLocalSkin
-            }
+            PrepareIdentity();
             var (host, port) = hostAddress != null
                 ? (hostAddress[..hostAddress.LastIndexOf(':')], int.Parse(hostAddress[(hostAddress.LastIndexOf(':') + 1)..]))
                 : ModConfig.Current.ParseServer();
@@ -695,6 +795,55 @@ internal sealed class MultiplayerClient : INetEventListener
             ModLog.Error("Connection attempt failed", e);
             NotifyDisconnect(Tr.CannotConnect(ModConfig.Current.Server, e.GetType().Name));
             server = null;
+        }
+    }
+
+    /// <summary>Joins a room over WebSocket. Runs on the game thread; the connection itself runs on its own thread.</summary>
+    private void ConnectRoom()
+    {
+        try
+        {
+            if (!roomExitHooked)
+            {
+                roomExitHooked = true;
+                // Game closing: tell the room instead of letting it wait for the timeout.
+                AppDomain.CurrentDomain.ProcessExit += (_, _) => webServer?.Disconnect("client closed");
+            }
+
+            PrepareIdentity();
+            serverAddress = RoomCode ?? roomUrl!;
+            ModLog.Info($"Connecting to room {serverAddress} as \"{playerName}\"…");
+            var headers = new Dictionary<string, string> { ["x-sbm-version"] = ProtocolInfo.ConnectionKey };
+            if (roomPassword != null)
+            {
+                headers["x-room-password"] = roomPassword;
+            }
+            var connection = new WsConnection(new Uri(roomUrl!), headers, OnWebOpen, OnWebMessage, OnWebClosed);
+            webServer = connection;
+            connection.Start();
+        }
+        catch (Exception e)
+        {
+            ModLog.Error("Connection attempt failed", e);
+            NotifyDisconnect(Tr.CannotConnect(serverAddress, e.GetType().Name));
+            webServer = null;
+        }
+    }
+
+    /// <summary>Our name and skin, read from the game save when available.</summary>
+    private void PrepareIdentity()
+    {
+        playerName = ResolvePlayerName();
+        try
+        {
+            if (GameAccess.Game != null)
+            {
+                localSkin = SkinCache.LocalSkinId(GameAccess.Game);
+            }
+        }
+        catch (Exception)
+        {
+            // no save yet (first launch): the skin is sent later by TrackLocalSkin
         }
     }
 
@@ -739,7 +888,14 @@ internal sealed class MultiplayerClient : INetEventListener
     {
         lock (sendGate)
         {
-            server?.Send(build(writer), method);
+            if (webServer != null)
+            {
+                webServer.Send(build(writer), method);
+            }
+            else
+            {
+                server?.Send(build(writer), method);
+            }
         }
     }
 
@@ -802,12 +958,26 @@ internal sealed class MultiplayerClient : INetEventListener
         ResetSessionState();
     }
 
+    /// <summary>The WebSocket layer reports HTTP refusals as "HTTP_STATUS:n"; these are the codes the server means by them.</summary>
+    private static string NormalizeCloseReason(string reason) => reason switch
+    {
+        "HTTP_STATUS:401" => ServerReasons.BadPassword,
+        "HTTP_STATUS:404" => ServerReasons.RoomNotFound,
+        "HTTP_STATUS:426" => ServerReasons.VersionMismatch,
+        "HTTP_STATUS:429" => ServerReasons.RateLimited,
+        "HTTP_STATUS:503" => ServerReasons.Full,
+        _ when reason.StartsWith("HTTP_STATUS:", StringComparison.Ordinal) => ServerReasons.Unreachable,
+        _ => reason,
+    };
+
     /// <summary>The server sends codes (SERVER_FULL, VERSION_MISMATCH:4, KICKED…) that the client translates.</summary>
     private static string TranslateReasonCode(string code) => code switch
     {
         ServerReasons.Full => Tr.ServerFull,
         ServerReasons.BadPassword => Tr.BadPassword,
         ServerReasons.Kicked => Tr.Kicked,
+        ServerReasons.RoomNotFound => Tr.RoomNotFound,
+        ServerReasons.RateLimited => Tr.RateLimited,
         _ when code.StartsWith(ServerReasons.VersionMismatch + ":") => Tr.VersionMismatch(code[(ServerReasons.VersionMismatch.Length + 1)..]),
         _ => code, // older server: plain-text message
     };
@@ -818,6 +988,12 @@ internal sealed class MultiplayerClient : INetEventListener
         {
             return;
         }
+        HandleMessage(reader, peer.Ping);
+    }
+
+    /// <summary>One message from the server, over UDP or a room's WebSocket. Runs on the network thread.</summary>
+    private void HandleMessage(NetDataReader reader, int pingMs)
+    {
         try
         {
             var type = (MessageType)reader.GetByte();
@@ -899,7 +1075,7 @@ internal sealed class MultiplayerClient : INetEventListener
                 {
                     RoundInfo info = Msg.GetRound(reader);
                     WatchUnknownMode(info);
-                    Round.SetInfo(info, peer.Ping / 1000.0);
+                    Round.SetInfo(info, pingMs / 1000.0);
                     ModLog.Info($"Round {info.RoundId}: {info.Phase} on {(info.MapKey == "" ? "-" : info.MapKey)}, {info.RemainingSeconds:0} s");
                     break;
                 }
@@ -1016,6 +1192,57 @@ internal sealed class MultiplayerClient : INetEventListener
         {
             Notifications.Info(Tr.PlayerJoined(info.Name));
         }
+    }
+
+    // ---------- WebSocket events (website rooms, network thread) ----------
+
+    private void OnWebOpen(WsConnection connection)
+    {
+        if (!ReferenceEquals(connection, webServer))
+        {
+            return;
+        }
+        ModLog.Info($"Connected to room {serverAddress}");
+        int skin = localSkin;
+        Send(w => Msg.Hello(w, playerName, skin, ProtocolInfo.OwnCapabilities), DeliveryMethod.ReliableOrdered);
+    }
+
+    private void OnWebMessage(WsConnection connection, byte[] data)
+    {
+        if (ReferenceEquals(connection, webServer))
+        {
+            HandleMessage(new NetDataReader(data), connection.Ping);
+        }
+    }
+
+    private void OnWebClosed(WsConnection connection, string closeReason)
+    {
+        if (!ReferenceEquals(connection, webServer))
+        {
+            return; // closed on purpose (Connect/Disconnect from the menu)
+        }
+        string code = NormalizeCloseReason(closeReason);
+        string reason = code switch
+        {
+            "" => Tr.ConnectionLost,
+            ServerReasons.Unreachable => Tr.ServerUnreachable(serverAddress),
+            _ => TranslateReasonCode(code),
+        };
+        if (code is ServerReasons.BadPassword or ServerReasons.Kicked or ServerReasons.RoomNotFound
+            || code.StartsWith(ServerReasons.VersionMismatch, StringComparison.Ordinal))
+        {
+            // Retrying would be pointless: wait for the player to act (F8 menu).
+            userDisconnected = true;
+            ModLog.Warn($"Disconnected from the room: {reason}");
+            NotifyDisconnect(reason);
+        }
+        else
+        {
+            ModLog.Warn($"Disconnected from the room: {reason}. Retrying in {ReconnectDelaySeconds} s.");
+            NotifyDisconnect(Tr.RetryingEvery(reason, (int)ReconnectDelaySeconds));
+        }
+        webServer = null;
+        ResetSessionState();
     }
 
     public void OnNetworkError(IPEndPoint endPoint, SocketError socketError) =>

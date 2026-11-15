@@ -38,6 +38,17 @@ internal static class Tr
     // ---------- Menu ----------
     public static string MenuTitle(string version) => T($"Multiplayer  (SBMultiplayer v{version})", $"Multijoueur  (SBMultiplayer v{version})");
     public static string ServerField => T("Server (address:port)", "Serveur (adresse:port)");
+    public static string RoomsSection => T("Rooms (on the website)", "Salles (sur le site)");
+    public static string RoomCodeField => T("Room code", "Code de la salle");
+    public static string RoomPasswordField => T("Room password", "Mot de passe de la salle");
+    public static string JoinRoomButton => T("Join room", "Rejoindre la salle");
+    public static string CreateRoomButton => T("Create a room", "Créer une salle");
+    public static string CreateRoomHint => T("Creates a room on the website with a code to share. You are its admin.", "Crée une salle sur le site avec un code à partager. Vous en êtes l'admin.");
+    public static string RoomCreated(string code) => T($"Room created: {code}. Share this code.", $"Salle créée : {code}. Partagez ce code.");
+    public static string RoomCreateFailed(string error) => T($"Could not create a room ({error})", $"Impossible de créer une salle ({error})");
+    public static string NoRoomChosen => T("Type a room code first", "Entrez d'abord un code de salle");
+    public static string RoomNotFound => T("No room has that code", "Aucune salle ne porte ce code");
+    public static string RateLimited => T("Too many attempts, wait a minute", "Trop de tentatives, attendez une minute");
     public static string NameField => T("Name (empty = Steam name)", "Pseudo (vide = pseudo Steam)");
     public static string Connect => T("Connect", "Se connecter");
     public static string Disconnect => T("Disconnect", "Se déconnecter");
